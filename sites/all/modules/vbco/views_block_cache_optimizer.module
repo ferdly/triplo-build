@@ -1,0 +1,509 @@
+<?php
+/**
+ * @file
+ * Automatically configure the best block-cache setting for views block
+ * displays.
+ */
+
+// By default, VBCO will automatically optimize the block cache
+// (unless disabled for a specific view display).
+define('VIEWS_BLOCK_CACHE_OPTIMIZER_DEFAULT', FALSE);
+
+function views_block_cache_optimizer_form_views_ui_edit_form_alter(&$form, &$form_state) {
+  $form['#submit'][] = 'views_block_cache_optimizer__views_ui_form_submit';
+  $form['actions']['save']['#submit'][] = 'views_block_cache_optimizer__views_ui_form_submit';
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ * Add elements to the views_ui_edit_display_form form.
+ */
+function views_block_cache_optimizer_form_views_ui_edit_display_form_alter(&$form, &$form_state) {
+  if (!empty($form_state['section']) && $form_state['section'] == 'block_caching') {
+    $view_name = $form_state['view']->name;
+    $display_id = $form_state['display_id'];
+
+    if (!isset($form['#attached']['js'])) {
+      $form['#attached']['js'] = array();
+    }
+    $form['#attached']['js'][] = drupal_get_path('module', 'views_block_cache_optimizer') . '/views_block_cache_optimizer.js';
+
+    $view_blockcache_enabled = views_block_cache_optimizer__is_blockcache_enabled($form_state['view'], $display_id);
+    $vbco_enabled = views_block_cache_optimizer__is_display_optimizer_enabled($form_state['view'], $display_id);
+    // If a block cache setting exists and vbco is not enabled for that
+    // display, assume it was set manually and don't mess with it. Turn vbco
+    // on in all other scenarios.
+    if ($view_blockcache_enabled && !$vbco_enabled) {
+      $vbco_default = FALSE;
+    }
+    else {
+      $vbco_default = TRUE;
+    }
+
+    // Add a checkbox to choose automatic selection.
+    $element['views_block_cache_optimizer'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Manage automatically'),
+      '#description' => t('The best block-cache setting will be automatically selected, based on the fields, filters and arguments used.'),
+      '#default_value' => views_block_cache_optimizer__is_display_optimizer_enabled($form_state['view'], $display_id),
+      '#default_value' => $vbco_default,
+    );
+
+    if ($vbco_enabled) {
+      $form['options']['block_caching']['#default_value'] = views_block_cache_optimizer__suggest_settings_for_view_display($view_name, $display_id);
+    }
+
+    if ($index = array_search('block_caching', array_keys($form['options']))) {
+      $form['options'] = array_slice($form['options'], 0, $index) + $element + array_slice($form['options'], $index);
+    }
+    else {
+      $form['options'] += $element;
+    }
+
+    // Attach to both the form-submit, and the form submit-button's submit,
+    // because the form may be handled by AJAX.
+    $form['buttons']['submit']['#validate'][] = 'views_block_cache_optimizer__views_ui_edit_display_form_validate';
+    $form['#validate'][] = 'views_block_cache_optimizer__views_ui_edit_display_form_validate';
+    $form['buttons']['submit']['#submit'][] =  'views_block_cache_optimizer__views_ui_edit_display_form_submit';
+    $form['#submit'][] = 'views_block_cache_optimizer__views_ui_edit_display_form_submit';
+  }
+}
+
+/**
+ * Additional validation handler to set the suggested blockcache setting.
+ */
+function views_block_cache_optimizer__views_ui_edit_display_form_validate($form, &$form_state) {
+  if ($form_state['values']['views_block_cache_optimizer']) {
+    $view_name = $form_state['view']->name;
+    $display_id = $form_state['display_id'];
+    $form_state['values']['block_caching'] = views_block_cache_optimizer__suggest_settings_for_view_display($view_name, $display_id);
+  }
+}
+
+/**
+ * Additional submit handler for the views_ui_edit_display_form_submit form.
+ */
+function views_block_cache_optimizer__views_ui_edit_display_form_submit($form, &$form_state) {
+  $view_name = $form_state['view']->name;
+  $display_id = $form_state['display_id'];
+
+  $optimizer_is_enabled = (bool) $form_state['values']['views_block_cache_optimizer'];
+  ctools_object_cache_set('vbco', $view_name . ':' . $display_id, $optimizer_is_enabled);
+}
+
+/**
+ * Additional submit handler for the views_ui_edit_display_form_submit form.
+ */
+function views_block_cache_optimizer__views_ui_form_submit($form, &$form_state) {
+  $view_name = $form_state['view']->name;
+  $display_id = $form_state['display_id'];
+
+  $key = $view_name . ':' . $display_id;
+  $optimizer_is_enabled = ctools_object_cache_get('vbco', $key);
+  views_block_cache_optimizer__set_display_setting($view_name, $display_id, $optimizer_is_enabled);
+  ctools_object_cache_clear('vbco', $key);
+}
+
+/**
+ * Is the optimizer for a particular view/display disabled?
+ *
+ * @param String $view_name
+ * Name of the view.
+ * @param String $display_id
+ * The ID of a block display on the specified view.
+ *
+ * @return Boolean
+ * TRUE if the optimizer is enabled for the given view/display.
+ */
+function views_block_cache_optimizer__is_display_optimizer_enabled($view, $display_id) {
+  $db_setting = (int) views_block_cache_optimizer__blockcache_setting($view, $display_id) !== -1;
+  $db_setting = (bool) db_select('views_block_cache_optimizer', 'vbco')
+    ->fields('vbco', array('enabled'))
+    ->condition('name', $view->name)
+    ->condition('display', $display_id)
+    ->execute()->fetchField();
+  $key = $view->name . ':' . $display_id;
+  $tmp_setting = ctools_object_cache_get('vbco', $key);
+  if ($tmp_setting !== NULL && $db_setting !== $tmp_setting) {
+    $enabled = $tmp_setting;
+  }
+  else {
+    $enabled = $db_setting;
+  }
+  return $enabled;
+}
+
+/**
+ * Helper function to return the blockcache setting for a particular
+ * view/display.
+ */
+function views_block_cache_optimizer__blockcache_setting($view, $display_id) {
+  if (isset($view->display[$display_id]->display_options['block_caching'])) {
+    $setting = $view->display[$display_id]->display_options['block_caching'];
+  }
+  else {
+    $setting = DRUPAL_NO_CACHE;
+  }
+  return $setting;
+}
+
+function views_block_cache_optimizer__is_blockcache_enabled($view, $display_id) {
+  return (int) views_block_cache_optimizer__blockcache_setting($view, $display_id) !== -1;
+}
+
+/**
+ * Enable or disable optimization for a single display.
+ *
+ * @param String $view_name
+ * Name of the view.
+ * @param String $display_id
+ * The ID of a block display on the specified view.
+ * @param Bool $optimizer_is_enabled
+ * Set to TRUE to enable the optimizer for the chosen view/display.
+ * Set to FALSE to disable the optimizer.
+ */
+function views_block_cache_optimizer__set_display_setting($view_name, $display_id, $optimizer_is_enabled) {
+  db_merge('views_block_cache_optimizer')
+    ->key(array('name' => $view_name))
+    ->fields(array('display' => $display_id, 'enabled' => (int) $optimizer_is_enabled))
+    ->execute();
+}
+
+/**
+ * Reconfigure all views to use the best block-cache setting.
+ */
+function views_block_cache_optimizer__optimise_all_views() {
+  foreach (views_block_cache_optimizer__list_all_views() as $view_name) {
+    $view = views_get_view($view_name);
+    views_block_cache_optimizer__optimise_block_caches($view);
+  }
+}
+
+/**
+ * Reconfigure a view to use the best block-cache setting.
+ */
+function views_block_cache_optimizer__optimise_block_caches(view $view) {
+  $suggestions = views_block_cache_optimizer__suggest_settings_for_view($view);
+
+  foreach ($suggestions as $display_id => $cache_setting) {
+    $view->set_display($display_id);
+    $view->init_display();
+    $view->display_handler->set_option('block_caching', $cache_setting);
+  }
+  $view->save();
+}
+
+
+/**
+ * Get the suggested block-cache settings for a single display on a view.
+ *
+ * @param String $view_name
+ * Name of a view.
+ * @param String $display_id
+ * Name of the display to check.
+ *
+ * @return Int|NULL
+ * The optimum block-cache setting (for example, DRUPAL_CACHE_PER_PAGE).
+ * Returns NULL if the view/display combination is not found.
+ */
+function views_block_cache_optimizer__suggest_settings_for_view_display($view_name, $display_id) {
+  if ($view = views_get_view($view_name)) {
+    $suggestions = views_block_cache_optimizer__suggest_settings_for_view($view);
+    return (array_key_exists($display_id, $suggestions)) ? $suggestions[$display_id] : NULL;
+  }
+}
+
+/**
+ * Get the suggested block-cache settings for a view.
+ *
+ * @param Object $view
+ * A fully-loaded views object.
+ *
+ * @return Array
+ * Array keyed by the display ID of the block displays used on the view, where
+ * the value is the suggested cache setting.
+ */
+function views_block_cache_optimizer__suggest_settings_for_view(view $view) {
+  $blocks = array();
+
+  $master_display = $view->display['default'];
+
+  // Iterate each display to identify the block displays.
+  foreach ($view->display as $display_id => $display) {
+    if ($display->display_plugin == 'block') {
+      // If the display doesn't override master, copy the master settings to
+      // the local display.
+
+      // Copy across:
+      // $master_display->display_options['fields']
+      // $master_display->display_options['filters']
+      // $master_display->display_options['arguments']?!
+
+
+      if (empty($display->display_options['fields']) && !empty($master_display->display_options['fields'])) {
+        $display->display_options['fields'] = $master_display->display_options['fields'];
+      }
+      if (empty($display->display_options['filters']) && !empty($master_display->display_options['filters'])) {
+        $display->display_options['filters'] = $master_display->display_options['filters'];
+      }
+      if (empty($display->display_options['arguments']) && !empty($master_display->display_options['arguments'])) {
+        $display->display_options['arguments'] = $master_display->display_options['arguments'];
+      }
+
+      $blocks[$display_id] = views_block_cache_optimizer__suggest_setting_for_display($display);
+    }
+  }
+  return $blocks;
+}
+
+
+/**
+ * Suggest the best cache-setting for a views block display.
+ *
+ * @param Object $display
+ * A views_display object for a block display.
+ *
+ * @return Int
+ * The optimum block-cache setting (for example, DRUPAL_CACHE_PER_PAGE).
+ */
+function views_block_cache_optimizer__suggest_setting_for_display(views_display $display) {
+  $cache_setting = 0;
+
+  // Get a list of all of the field/filter/argument handlers for this display.
+  $handler_list = views_block_cache_optimizer__get_handler_names($display);
+  foreach ($handler_list as $handler_type => $handlers) {
+    foreach ($handlers as $handler_name) {
+      $cache_suggestion = views_block_cache_optimizer__suggest_cache_for_handler($handler_name, $handler_type);
+
+      // DRUPAL_NO_CACHE is the worst-case scenario: any field/filter/argument
+      // where this is suggested dictates that the display is not cached.
+      if ($cache_suggestion == DRUPAL_NO_CACHE) {
+        return $cache_suggestion;
+      }
+
+      // If the cache suggestion has a PER-PAGE component, add to cache setting.
+      if ($cache_suggestion & DRUPAL_CACHE_PER_PAGE) {
+        $cache_setting |= DRUPAL_CACHE_PER_PAGE;
+      }
+
+      // Per-user has highest precedence; if the cache setting is already per-
+      // user, don't change it.
+      if (!($cache_setting & DRUPAL_CACHE_PER_USER)) {
+        if ($cache_suggestion & DRUPAL_CACHE_PER_USER) {
+          // PER-USER overrides PER-ROLE
+          $cache_setting |= DRUPAL_CACHE_PER_USER;
+          $cache_setting &= ~ DRUPAL_CACHE_PER_ROLE;
+        }
+        elseif ($cache_suggestion & DRUPAL_CACHE_PER_ROLE) {
+          $cache_setting |= DRUPAL_CACHE_PER_ROLE;
+        }
+      }
+    }
+  }
+
+  return $cache_setting ? $cache_setting : DRUPAL_CACHE_GLOBAL;
+}
+
+/**
+ * Get a list of all of the field/filter/argument handlers for this display.
+ *
+ * @param Object $display
+ * A views_display object for a block display.
+ *
+ * @return array
+ * Array of handler-types, each of which is an array of handler names.
+ */
+function views_block_cache_optimizer__get_handler_names(views_display $display) {
+  $handler_names = array();
+
+  // Check filters.
+  if (!empty($display->display_options['filters'])) {
+    foreach ($display->display_options['filters'] as $key => $filter) {
+      $handler_names['filter'][] = views_block_cache_optimizer__get_handler_name('filter', $filter);
+    }
+  }
+  // Check fields
+  if (!empty($display->display_options['fields'])) {
+    foreach ($display->display_options['fields'] as $key => $filter) {
+      $handler_names['field'][] = views_block_cache_optimizer__get_handler_name('field', $filter);
+    }
+  }
+  // Check arguments
+  if (!empty($display->display_options['arguments'])) {
+    foreach ($display->display_options['arguments'] as $key => $filter) {
+      $handler_names['argument'][] = views_block_cache_optimizer__get_handler_name('argument', $filter);
+    }
+  }
+  return $handler_names;
+}
+
+/**
+ * Look up the name of the handler that caters for a particular field/filter/
+ * etc.
+ */
+function views_block_cache_optimizer__get_handler_name($type, $plugin) {
+  switch ($type) {
+    case 'filter':
+      // Look up the table/field definition.
+      $data = views_fetch_data($plugin['table']);
+      if ($field = $data[$plugin['field']]) {
+        return $field['filter']['handler'];
+      }
+      break;
+
+    case 'field':
+      // Look up the table/field definition.
+      $data = views_fetch_data($plugin['table']);
+      if ($field = $data[$plugin['field']]) {
+        return $field['field']['handler'];
+      }
+      break;
+
+    case 'argument':
+      // Look up the table/field definition.
+      $data = views_fetch_data($plugin['table']);
+      if ($field = $data[$plugin['field']]) {
+        return $field['argument']['handler'];
+      }
+      break;
+
+  }
+}
+
+
+/**
+ * Suggest the best block-cache setting for a single handler.
+ * For example, views-field handlers where the contents change per user will
+ * return DRUPAL_CACHE_PER_USER, etc.
+ *
+ * @param String $handler_name
+ * Name of a views handler, such as a views-field plugin.
+ * @param String $handler_type
+ * Type of a views handler, such as 'field', 'filter', 'argument', etc.
+ *
+ * @return Int
+ * The optimum cache setting for that handler.
+ */
+function views_block_cache_optimizer__suggest_cache_for_handler($handler_name, $handler_type) {
+  $result = module_invoke_all('views_block_cache_optimizer_suggestion', $handler_name, $handler_type);
+  return count($result) ? array_shift($result) : NULL;
+}
+
+/**
+ * Implements hook_views_block_cache_optimizer_suggestion().
+ */
+function views_block_cache_optimizer_views_block_cache_optimizer_suggestion($handler_name, $handler_type) {
+  $cache = 0;
+
+  switch ($handler_name) {
+    // FIELDS
+    case 'views_handler_field_comment_link_approve':
+    case 'views_handler_field_comment_link_edit':
+    case 'views_handler_field_comment_link_reply':
+    case 'views_handler_field_node_new_comments':
+    case 'views_handler_field_contact_link':
+    // Implements field_access().
+    case 'views_handler_field_field':
+    case 'views_handler_field_locale_link_edit':
+    case 'views_handler_field_history_user_timestamp':
+    // Uses node_access.
+    case 'views_handler_field_node_link':
+    // Uses node_access.
+    case 'views_handler_field_node_link_delete':
+    // Uses node_access.
+    case 'views_handler_field_node_link_edit':
+    case 'views_handler_field_node_revision_link_delete':
+    case 'views_handler_field_node_revision_link_revert':
+    case 'views_handler_field_term_link_edit':
+    // Uses term_access tag in SQL query.
+    case 'views_handler_field_term_node_tid':
+    case 'views_handler_field_node_link_translate':
+    case 'views_handler_field_user_link_cancel':
+    case 'views_handler_field_user_link_edit':
+      return DRUPAL_CACHE_PER_USER;
+
+    // All these call user_access(), so just cache per role.
+    case 'views_handler_field_user':
+    case 'views_handler_field_user_language':
+    case 'views_handler_field_user_link':
+    case 'views_handler_field_user_picture':
+      return DRUPAL_CACHE_PER_ROLE;
+
+    // FILTERS
+    //  Uses current user's language
+    case 'views_handler_filter_locale_language':
+    case 'views_handler_filter_history_user_timestamp':
+    case 'views_handler_filter_node_access':
+    // Uses ***CURRENT_USER*** ?
+    case 'views_handler_filter_node_status':
+    case 'views_handler_filter_node_uid_revision':
+    //  Probably per-user.
+    // @TODO: check if this is necessary.
+    case 'views_handler_filter_search':
+    // Uses term_access tag in SQL query.
+    case 'views_handler_filter_term_node_tid':
+    // Uses ***CURRENT_USER***
+    // @TODO: check if this is necessary.
+    case 'views_handler_filter_node_language':
+    case 'views_handler_filter_user_current':
+      return DRUPAL_CACHE_PER_USER;
+
+    // ARGUMENTS
+    case 'views_plugin_argument_validate_node':
+    //  Probably per-user.
+    // @TODO: check if this is necessary.
+    case 'views_handler_argument_search':
+    // Uses term_access tag in SQL query.
+    case 'views_plugin_argument_validate_taxonomy_term':
+    case 'views_plugin_argument_default_current_user':
+    case 'views_plugin_argument_validate_user':
+      return DRUPAL_CACHE_PER_PAGE & DRUPAL_CACHE_PER_USER;
+
+    // RELATIONSHIPS
+    // Uses term_access tag in SQL query.
+    case 'views_handler_relationship_node_term_data':
+    // Uses ***CURRENT_LANGUAGE***
+    // @TODO: check if this is necessary.
+    case 'views_handler_relationship_translation':
+      return DRUPAL_CACHE_PER_USER;
+
+    // ROWS
+    // Uses node_view / drupal_render
+    // @TODO: check if this is necessary.
+    case 'views_plugin_row_node_rss':
+    // Uses node_view / drupal_render
+    // @TODO: check if this is necessary.
+    case 'views_plugin_row_node_view':
+    // Invokes user_view.
+    // @TODO: check if this is necessary.
+    case 'views_plugin_row_user_view':
+      return DRUPAL_CACHE_PER_USER;
+
+    default:
+      if ($handler_type == 'argument') {
+        // All argument handlers require cache-per-page.
+        return DRUPAL_CACHE_PER_PAGE;
+      }
+  }
+}
+
+/**
+ * Get the names of every view with block displays.
+ */
+function views_block_cache_optimizer__list_all_views() {
+  // Track which views have block displays.
+  $views_with_block_displays = array();
+
+  ctools_include('export');
+  $views = ctools_export_crud_load_all('views_view');
+  foreach ($views as $view) {
+    foreach ($view->display as $display_id => $display) {
+      if ($display->display_plugin == 'block') {
+        $views_with_block_displays[] = $view->name;
+        continue (2);
+      }
+    }
+  }
+
+  return $views_with_block_displays;
+}

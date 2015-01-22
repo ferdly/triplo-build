@@ -1,0 +1,58 @@
+<?php
+/**
+ * @file
+ * Tests for the VBCO module.
+ */
+
+/**
+ * Test that the correct cache suggestions are provided for views.
+ */
+class ViewsBlockCacheOptimizerTest extends DrupalWebTestCase {
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Cache-detection',
+      'description' => 'Test the correct detection of cache modes for block displays.',
+      'group' => 'Views Block Cache Optimizer',
+    );
+  }
+
+  function setUp() {
+    // Enable ctools, views, vbco, and the vbco tests.
+    parent::setUp('ctools', 'views', 'views_block_cache_optimizer', 'views_block_cache_optimizer_test');
+  }
+
+  /**
+   * Test view: 'should_be_per_page'.
+   * This view contains a contextual filter (i.e. a views argument) and
+   * therefore must be at least DRUPAL_CACHE_PER_PAGE.
+   * There aren't any other fields or filters which would affect it.
+   */
+  function testView1() {
+    $cache_suggestion = views_block_cache_optimizer__suggest_settings_for_view_display('should_be_per_page', 'block');
+    $this->assertEqual($cache_suggestion, DRUPAL_CACHE_PER_PAGE, "The cache-suggestion for 'should_be_per_page' is DRUPAL_CACHE_PER_PAGE.");
+  }
+
+  /**
+   * Test view: 'should_be_per_user'.
+   * This view contains a the "User picture" field, which checks user_access()
+   * in the renderer, therefore the view must be a minimum of
+   * DRUPAL_CACHE_PER_USER.
+   */
+  function testView2() {
+    $cache_suggestion = views_block_cache_optimizer__suggest_settings_for_view_display('should_be_per_user', 'block');
+    $this->assertEqual($cache_suggestion, DRUPAL_CACHE_PER_USER, "The cache-suggestion for 'should_be_per_user' is DRUPAL_CACHE_PER_USER.");
+  }
+
+  /**
+   * Test view: 'should_be_per_user_per_age'.
+   * This view contains a the "User picture" field, which checks user_access()
+   * in the renderer, and a contextual filter therefore the view must be a
+   * minimum of DRUPAL_CACHE_PER_USER | DRUPAL_CACHE_PER_PAGE.
+   */
+  function testView3() {
+    $cache_suggestion = views_block_cache_optimizer__suggest_settings_for_view_display('should_be_per_user_per_page', 'block');
+    $this->assertEqual($cache_suggestion, DRUPAL_CACHE_PER_USER | DRUPAL_CACHE_PER_PAGE, "The cache-suggestion for 'should_be_per_user_per_page' is DRUPAL_CACHE_PER_USER | DRUPAL_CACHE_PER_PAGE.");
+  }
+
+}

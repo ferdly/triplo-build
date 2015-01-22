@@ -1,0 +1,13 @@
+name = "Views block cache optimizer"
+description = "Automatically set the block-cache mode for block displays."
+core = "7.x"
+dependencies[] = views
+package = Views
+files[] = views_block_cache_optimizer.test
+
+; Information added by drupal.org packaging script on 2013-10-19
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "vbco"
+datestamp = "1382151439"
+

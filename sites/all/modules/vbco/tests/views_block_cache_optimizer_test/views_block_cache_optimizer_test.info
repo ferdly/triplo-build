@@ -1,0 +1,20 @@
+name = "views_block_cache_optimizer_test"
+description = "Views for testing the VBCO module."
+core = "7.x"
+package = "Features"
+dependencies[] = "ctools"
+dependencies[] = "views"
+features[ctools][] = "views:views_default:3.0"
+features[views_view][] = "should_be_per_page"
+features[views_view][] = "should_be_per_user"
+features[views_view][] = "should_be_per_user_per_page"
+
+hidden = TRUE
+
+
+; Information added by drupal.org packaging script on 2013-10-19
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "vbco"
+datestamp = "1382151439"
+

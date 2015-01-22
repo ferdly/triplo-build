@@ -1,0 +1,32 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function views_block_cache_optimizer_schema() {
+  $schema['views_block_cache_optimizer'] = array(
+    'fields' => array(
+      'name' => array(
+        'description' => 'The name of the view.',
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'display' => array(
+        'description' => 'The display of the view.',
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'enabled' => array(
+        'description' => 'Whether or not vbco is enabled for the views display.',
+        'type' => 'int',
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('name'),
+  );
+  return $schema;
+}
